@@ -66,7 +66,7 @@ bot.start(async (ctx) => {
         );
     }
 
-    await ctx.reply('🎬 Kino olish uchun raqam yuboring');
+    await ctx.reply('🎬 Kino olish uchun @NOVAkino_kod dan olgan kodni yuboring');
 });
 
 // ================== CHECK SUB ==================
