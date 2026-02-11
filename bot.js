@@ -2,35 +2,36 @@ const { Telegraf, Markup } = require('telegraf');
 const fs = require('fs');
 require('dotenv').config();
 
-console.log('🎬 KINO BOT - DESCRIPTION VERSION');
-
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = process.env.ADMIN_ID.toString();
 const CHANNELS = process.env.CHANNELS.split(',').map(c => c.trim());
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// ================== DATA ==================
+// ================= DATA =================
 let kinolar = {};
+let users = {};
+let daily = {};
+let weekly = {};
+let monthly = {};
 const adminState = {};
+const lastRequest = {}; // anti-spam
 
-if (fs.existsSync('kinolar.json')) {
-    kinolar = JSON.parse(fs.readFileSync('kinolar.json', 'utf8'));
-}
+if (fs.existsSync('kinolar.json')) kinolar = JSON.parse(fs.readFileSync('kinolar.json'));
+if (fs.existsSync('users.json')) users = JSON.parse(fs.readFileSync('users.json'));
+if (fs.existsSync('daily.json')) daily = JSON.parse(fs.readFileSync('daily.json'));
+if (fs.existsSync('weekly.json')) weekly = JSON.parse(fs.readFileSync('weekly.json'));
+if (fs.existsSync('monthly.json')) monthly = JSON.parse(fs.readFileSync('monthly.json'));
 
-function saqlash() {
-    fs.writeFileSync('kinolar.json', JSON.stringify(kinolar, null, 2));
-}
+const save = (f, d) => fs.writeFileSync(f, JSON.stringify(d, null, 2));
 
-// ================== OBUNA TEKSHIRISH ==================
+// ================= OBUNA =================
 async function checkObuna(ctx, userId) {
     for (const ch of CHANNELS) {
         const channel = ch.startsWith('@') ? ch : '@' + ch;
         try {
-            const member = await ctx.telegram.getChatMember(channel, userId);
-            if (!['creator', 'administrator', 'member'].includes(member.status)) {
-                return false;
-            }
+            const m = await ctx.telegram.getChatMember(channel, userId);
+            if (!['creator', 'administrator', 'member'].includes(m.status)) return false;
         } catch {
             return false;
         }
@@ -38,142 +39,174 @@ async function checkObuna(ctx, userId) {
     return true;
 }
 
-// ================== KANAL TUGMALARI ==================
-function kanalKeyboard() {
-    return Markup.inlineKeyboard([
-        ...CHANNELS.map(ch => [
-            Markup.button.url(
-                `📢 ${ch}`,
-                `https://t.me/${ch.replace('@', '')}`
-            )
+const kanalKeyboard = () =>
+    Markup.inlineKeyboard([
+        ...CHANNELS.map(c => [
+            Markup.button.url(`📢 ${c}`, `https://t.me/${c.replace('@', '')}`)
         ]),
         [Markup.button.callback('✅ Obunani tekshirish', 'check_sub')]
     ]);
-}
 
-// ================== /START ==================
+// ================= START =================
 bot.start(async (ctx) => {
-    const userId = ctx.from.id.toString();
+    const id = ctx.from.id.toString();
+    users[id] = true;
+    save('users.json', users);
 
-    if (userId === ADMIN_ID) {
-        return ctx.reply('👑 Admin panel: /admin');
-    }
+    if (id === ADMIN_ID) return ctx.reply('👑 Admin panel: /admin');
 
-    if (!(await checkObuna(ctx, userId))) {
-        return ctx.reply(
-            '❌ Avval barcha kanallarga obuna bo‘ling:',
-            kanalKeyboard()
-        );
-    }
+    if (!(await checkObuna(ctx, id)))
+        return ctx.reply('❌ Avval kanallarga obuna bo‘ling', kanalKeyboard());
 
-    await ctx.reply('🎬 Kino olish uchun @NOVAkino_kod dan olgan kodni yuboring');
+    ctx.reply('🎬 Kino olish uchun raqam yuboring');
 });
 
-// ================== CHECK SUB ==================
+// ================= CHECK SUB =================
 bot.action('check_sub', async (ctx) => {
     await ctx.answerCbQuery();
-    if (await checkObuna(ctx, ctx.from.id.toString())) {
-        await ctx.editMessageText('✅ Obuna tasdiqlandi. Kino raqamini yuboring');
-    } else {
-        await ctx.editMessageText('❌ Hali obuna emasiz', kanalKeyboard());
-    }
+    (await checkObuna(ctx, ctx.from.id.toString()))
+        ? ctx.editMessageText('✅ Obuna tasdiqlandi')
+        : ctx.editMessageText('❌ Hali obuna emassiz', kanalKeyboard());
 });
 
-// ================== ADMIN PANEL ==================
-bot.command('admin', async (ctx) => {
+// ================= ADMIN =================
+bot.command('admin', (ctx) => {
     if (ctx.from.id.toString() !== ADMIN_ID) return;
-    await ctx.reply(
+    ctx.reply(
         '👨‍💻 ADMIN PANEL',
         Markup.inlineKeyboard([
-            [Markup.button.callback('🎬 Kino qo‘shish', 'add_film')],
-            [Markup.button.callback('📋 Kinolar', 'list_films')]
+            [Markup.button.callback('🎬 Kino qo‘shish', 'add')],
+            [Markup.button.callback('🗑 Kino o‘chirish', 'delete')],
+            [Markup.button.callback('📊 Statistika', 'stats')],
+            [Markup.button.callback('🏆 TOP kinolar', 'top')]
         ])
     );
 });
 
-// ================== ADD FILM ==================
-bot.action('add_film', async (ctx) => {
-    if (ctx.from.id.toString() !== ADMIN_ID) return;
-    adminState[ADMIN_ID] = { step: 'file' };
-    await ctx.editMessageText('📤 Video yoki fayl yuboring');
+// ================= ADMIN ACTIONS =================
+bot.action('add', (ctx) => {
+    adminState.step = 'file';
+    ctx.editMessageText('📤 Video yoki fayl yuboring');
 });
 
-// ================== FILE ==================
-bot.on(['video', 'document'], async (ctx) => {
-    if (ctx.from.id.toString() !== ADMIN_ID) return;
-    if (!adminState[ADMIN_ID] || adminState[ADMIN_ID].step !== 'file') return;
-
-    adminState[ADMIN_ID] = {
-        step: 'code',
-        fileId: ctx.message.video
-            ? ctx.message.video.file_id
-            : ctx.message.document.file_id,
-        type: ctx.message.video ? 'video' : 'document'
-    };
-
-    await ctx.reply('🔢 Kino raqamini kiriting');
+bot.action('delete', (ctx) => {
+    adminState.step = 'delete';
+    ctx.editMessageText('🗑 O‘chiriladigan kino raqamini yuboring');
 });
 
-// ================== TEXT ==================
+bot.action('stats', (ctx) => {
+    const today = new Date().toISOString().slice(0, 10);
+    const w = Object.values(weekly).reduce((a, b) => a + b, 0);
+    const m = Object.values(monthly).reduce((a, b) => a + b, 0);
+    const all = Object.values(kinolar).reduce((a, b) => a + (b.views || 0), 0);
+
+    let msg =
+        `📊 STATISTIKA\n\n` +
+        `🎬 Kinolar: ${Object.keys(kinolar).length}\n` +
+        `👥 Userlar: ${Object.keys(users).length}\n` +
+        `👁 Jami: ${all}\n` +
+        `📅 Bugun: ${daily[today] || 0}\n` +
+        `📈 Haftalik: ${w}\n` +
+        `📆 Oylik: ${m}`;
+
+    ctx.editMessageText(msg);
+});
+
+bot.action('top', (ctx) => {
+    const sorted = Object.entries(kinolar)
+        .sort((a, b) => (b[1].views || 0) - (a[1].views || 0))
+        .slice(0, 5);
+
+    if (!sorted.length) return ctx.editMessageText('❌ Hozircha yo‘q');
+
+    let text = '🏆 TOP 5 KINO\n\n';
+    sorted.forEach(([k, v], i) => {
+        text += `${i + 1}. 🎬 ${k} — 👁 ${v.views}\n`;
+    });
+
+    ctx.editMessageText(text);
+});
+
+// ================= FILE =================
+bot.on(['video', 'document'], (ctx) => {
+    if (ctx.from.id.toString() !== ADMIN_ID) return;
+    if (adminState.step !== 'file') return;
+
+    adminState.fileId = ctx.message.video
+        ? ctx.message.video.file_id
+        : ctx.message.document.file_id;
+    adminState.type = ctx.message.video ? 'video' : 'document';
+    adminState.step = 'code';
+    ctx.reply('🔢 Kino raqamini kiriting');
+});
+
+// ================= TEXT =================
 bot.on('text', async (ctx) => {
-    const userId = ctx.from.id.toString();
+    const id = ctx.from.id.toString();
     const text = ctx.message.text.trim();
+    const now = Date.now();
 
-    // ADMIN → KOD
-    if (userId === ADMIN_ID && adminState[ADMIN_ID]?.step === 'code') {
-        if (!/^\d+$/.test(text)) return ctx.reply('❌ Faqat raqam kiriting');
+    // anti-spam (3 sekund)
+    if (lastRequest[id] && now - lastRequest[id] < 3000) return;
+    lastRequest[id] = now;
 
-        adminState[ADMIN_ID].code = text;
-        adminState[ADMIN_ID].step = 'desc';
+    const today = new Date().toISOString().slice(0, 10);
+    const week = new Date().getWeek?.() || 'w';
+    const month = new Date().toISOString().slice(0, 7);
 
-        return ctx.reply('📝 Kino tavsifini yozing');
+    // delete
+    if (id === ADMIN_ID && adminState.step === 'delete') {
+        if (!kinolar[text]) return ctx.reply('❌ Topilmadi');
+        delete kinolar[text];
+        save('kinolar.json', kinolar);
+        adminState.step = null;
+        return ctx.reply('🗑 O‘chirildi');
     }
 
-    // ADMIN → DESCRIPTION
-    if (userId === ADMIN_ID && adminState[ADMIN_ID]?.step === 'desc') {
-        const state = adminState[ADMIN_ID];
+    // admin code
+    if (id === ADMIN_ID && adminState.step === 'code') {
+        adminState.code = text;
+        adminState.step = 'desc';
+        return ctx.reply('📝 Tavsif yozing');
+    }
 
-        kinolar[state.code] = {
-            fileId: state.fileId,
-            type: state.type,
+    // admin desc
+    if (id === ADMIN_ID && adminState.step === 'desc') {
+        kinolar[adminState.code] = {
+            fileId: adminState.fileId,
+            type: adminState.type,
             description: text,
-            addedAt: new Date().toISOString()
+            views: 0
         };
-
-        saqlash();
-        delete adminState[ADMIN_ID];
-
-        return ctx.reply(
-            `✅ Kino qo‘shildi!\n\n` +
-            `🎬 Raqam: ${state.code}\n` +
-            `📝 Tavsif: ${text}`
-        );
+        save('kinolar.json', kinolar);
+        adminState.step = null;
+        return ctx.reply('✅ Kino qo‘shildi');
     }
 
-    // USER → KINO OLISH
-    if (!/^\d+$/.test(text)) return;
+    // user kino
+    if (!/^\d+$/.test(text) || !kinolar[text]) return;
 
-    if (!kinolar[text]) {
-        return ctx.reply('❌ Bunday raqamli kino yo‘q');
-    }
-
-    if (!(await checkObuna(ctx, userId))) {
+    if (!(await checkObuna(ctx, id)))
         return ctx.reply('❌ Avval obuna bo‘ling', kanalKeyboard());
-    }
 
-    const kino = kinolar[text];
-    const caption =
-        `🎬 Raqam: ${text}\n` +
-        `📝 Tavsif: ${kino.description || 'Mavjud emas'}`;
+    kinolar[text].views++;
+    daily[today] = (daily[today] || 0) + 1;
+    weekly[week] = (weekly[week] || 0) + 1;
+    monthly[month] = (monthly[month] || 0) + 1;
 
-    if (kino.type === 'video') {
-        await ctx.replyWithVideo(kino.fileId, { caption });
-    } else {
-        await ctx.replyWithDocument(kino.fileId, { caption });
-    }
+    save('kinolar.json', kinolar);
+    save('daily.json', daily);
+    save('weekly.json', weekly);
+    save('monthly.json', monthly);
+
+    const cap = `🎬 Raqam: ${text}\n📝 ${kinolar[text].description}`;
+    kinolar[text].type === 'video'
+        ? ctx.replyWithVideo(kinolar[text].fileId, { caption: cap })
+        : ctx.replyWithDocument(kinolar[text].fileId, { caption: cap });
 });
 
-// ================== START BOT ==================
-bot.launch().then(() => console.log('✅ BOT ISHGA TUSHDI'));
+// ================= RUN =================
+bot.launch();
+console.log('✅ BOT ISHGA TUSHDI');
 process.once('SIGINT', () => bot.stop());
 process.once('SIGTERM', () => bot.stop());
